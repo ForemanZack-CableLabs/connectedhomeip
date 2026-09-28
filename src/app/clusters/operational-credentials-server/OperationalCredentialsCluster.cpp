@@ -940,101 +940,6 @@ std::optional<DataModel::ActionReturnStatus> HandleSignVIDVerificationRequest(Co
 }
 
 std::optional<DataModel::ActionReturnStatus>
-HandleCertificateChainRequest(CommandHandler * commandObj, const ConcreteCommandPath & commandPath,
-                              TLV::TLVReader & input_arguments, Credentials::DeviceAttestationCredentialsProvider & dacProvider,
-                              BitFlags<OperationalCredentials::Feature> featureMap)
-{
-    MATTER_TRACE_SCOPE("CertificateChainRequest", "OperationalCredentials");
-    Commands::CertificateChainRequest::DecodableType commandData;
-    ReturnErrorOnFailure(commandData.Decode(input_arguments));
-
-    const auto certificateType = commandData.certificateType;
-    const bool pqcDaEnabled    = featureMap.Has(OperationalCredentials::Feature::kPQCDeviceAttestation);
-    const bool profileRequest  = pqcDaEnabled && commandData.cryptoProfile.HasValue();
-    const auto cryptoProfile   = commandData.cryptoProfile.ValueOr(kLegacyAttestationProfile);
-    const uint16_t segmentId   = profileRequest ? commandData.segmentID.ValueOr(0) : 0;
-    const uint16_t requestedSegmentSize =
-        profileRequest ? commandData.maxSegmentSize.ValueOr(kDefaultCertificateSegmentSize) : kDefaultCertificateSegmentSize;
-    const auto profileSupport = dacProvider.GetDeviceAttestationProfileSupport();
-
-    CHIP_ERROR err = CHIP_NO_ERROR;
-    // CryptoProfile describes the requested certificate's key. An ECDSA PAI/DAC
-    // can belong to an ML-DSA-rooted chain, so choose the stored chain separately.
-    const auto chainProfile = dacProvider.GetPreferredDeviceAttestationChainProfile();
-    Credentials::DeviceAttestationDocumentType documentType;
-    uint8_t documentBuffer[kDefaultCertificateSegmentSize];
-    MutableByteSpan documentSpan(documentBuffer);
-    size_t documentSize = 0;
-    size_t offset       = 0;
-
-    Commands::CertificateChainResponse::Type response;
-
-    if (pqcDaEnabled && !profileRequest && (commandData.segmentID.HasValue() || commandData.maxSegmentSize.HasValue()))
-    {
-        return Status::InvalidCommand;
-    }
-
-    if (profileRequest)
-    {
-        VerifyOrReturnValue(cryptoProfile != AttestationCryptoProfileEnum::kUnknownEnumValue, Status::InvalidCommand);
-        VerifyOrReturnValue(requestedSegmentSize >= kDefaultCertificateSegmentSize &&
-                                requestedSegmentSize <= kMaxCertificateSegmentSize,
-                            Status::InvalidCommand);
-        offset = static_cast<size_t>(segmentId) * kDefaultCertificateSegmentSize;
-    }
-
-    if (certificateType == kDACCertificate)
-    {
-        ChipLogProgress(Zcl, "OpCreds: Certificate Chain request received for DAC");
-        VerifyOrReturnValue(!profileRequest ||
-                                profileSupport.DACSupportedProfiles.HasAll(ToDeviceAttestationProfileBitmap(cryptoProfile)),
-                            Status::InvalidCommand);
-        documentType = Credentials::DeviceAttestationDocumentType::kDACCertificate;
-        SuccessOrExit(err = profileRequest ? dacProvider.GetDeviceAttestationDocumentSegment(documentType, chainProfile, offset,
-                                                                                             documentSpan, documentSize)
-                                           : dacProvider.GetDeviceAttestationCert(documentSpan));
-    }
-    else if (certificateType == kPAICertificate)
-    {
-        ChipLogProgress(Zcl, "OpCreds: Certificate Chain request received for PAI");
-        VerifyOrReturnValue(!profileRequest ||
-                                profileSupport.PAISupportedProfiles.HasAll(ToDeviceAttestationProfileBitmap(cryptoProfile)),
-                            Status::InvalidCommand);
-        documentType = Credentials::DeviceAttestationDocumentType::kPAICertificate;
-        SuccessOrExit(err = profileRequest ? dacProvider.GetDeviceAttestationDocumentSegment(documentType, chainProfile, offset,
-                                                                                             documentSpan, documentSize)
-                                           : dacProvider.GetProductAttestationIntermediateCert(documentSpan));
-    }
-    else
-    {
-        ChipLogError(Zcl, "OpCreds: Certificate Chain request received for unknown type: %d", static_cast<int>(certificateType));
-        return Status::InvalidCommand;
-    }
-
-    if (!profileRequest)
-    {
-        response.certificate = documentSpan;
-    }
-    else
-    {
-        VerifyOrReturnValue(BuildSegmentedCertificateResponse(documentSpan, documentSize, offset, segmentId, response) ==
-                                CHIP_NO_ERROR,
-                            Status::InvalidCommand);
-    }
-
-    commandObj->AddResponse(commandPath, response);
-    return std::nullopt;
-
-exit:
-    ChipLogError(Zcl, "OpCreds: Failed CertificateChainRequest: %" CHIP_ERROR_FORMAT, err.Format());
-    // The document type handed to the provider is derived from an already validated CertificateType,
-    // so on a segmented read the only provider input left under client control is the offset. An
-    // invalid argument therefore means SegmentID pointed past the end of the document.
-    VerifyOrReturnValue(!profileRequest || err != CHIP_ERROR_INVALID_ARGUMENT, Status::InvalidCommand);
-    return err;
-}
-
-std::optional<DataModel::ActionReturnStatus>
 HandleAttestationRequest(CommandHandler * commandObj, const ConcreteCommandPath & commandPath, TLV::TLVReader & input_arguments,
                          Credentials::DeviceAttestationCredentialsProvider & dacProvider)
 {
@@ -1122,6 +1027,156 @@ void OnPlatformEventHandler(const chip::DeviceLayer::ChipDeviceEvent * event, in
     }
 }
 } // anonymous namespace
+
+std::optional<DataModel::ActionReturnStatus>
+OperationalCredentialsCluster::HandleCertificateChainRequest(CommandHandler * commandObj, const ConcreteCommandPath & commandPath,
+                                                             TLV::TLVReader & input_arguments)
+{
+    MATTER_TRACE_SCOPE("CertificateChainRequest", "OperationalCredentials");
+    Commands::CertificateChainRequest::DecodableType commandData;
+    ReturnErrorOnFailure(commandData.Decode(input_arguments));
+
+    auto & dacProvider         = mOpCredsContext.dacProvider;
+    const auto featureMap      = mOpCredsContext.featureMap;
+    const auto certificateType = commandData.certificateType;
+    const bool pqcDaEnabled    = featureMap.Has(OperationalCredentials::Feature::kPQCDeviceAttestation);
+    const bool profileRequest  = pqcDaEnabled && commandData.cryptoProfile.HasValue();
+    const auto cryptoProfile   = commandData.cryptoProfile.ValueOr(kLegacyAttestationProfile);
+    const uint16_t segmentId   = profileRequest ? commandData.segmentID.ValueOr(0) : 0;
+    const uint16_t requestedSegmentSize =
+        profileRequest ? commandData.maxSegmentSize.ValueOr(kDefaultCertificateSegmentSize) : kDefaultCertificateSegmentSize;
+    const auto profileSupport = dacProvider.GetDeviceAttestationProfileSupport();
+
+    CHIP_ERROR err = CHIP_NO_ERROR;
+    // The PAI request selects the chain. A P-256 DAC can belong to either chain,
+    // so subsequent DAC requests must use the selection from this same session.
+    AttestationChainSelection * selection = nullptr;
+    AttestationChainSelection * available = nullptr;
+    auto * exchange                       = commandObj->GetExchangeContext();
+    if (exchange != nullptr)
+    {
+        const auto session = exchange->GetSessionHandle();
+        VerifyOrReturnValue(session->GetSessionType() == Transport::Session::SessionType::kSecure, Status::InvalidCommand);
+        for (auto & entry : mAttestationChains)
+        {
+            if (entry.Contains(session))
+            {
+                selection = &entry;
+                break;
+            }
+            if (!entry)
+            {
+                available = &entry;
+            }
+        }
+    }
+    auto chainProfile = selection != nullptr ? selection->chainProfile : kLegacyAttestationProfile;
+    Credentials::DeviceAttestationDocumentType documentType;
+    uint8_t documentBuffer[kDefaultCertificateSegmentSize];
+    MutableByteSpan documentSpan(documentBuffer);
+    size_t documentSize = 0;
+    size_t offset       = 0;
+
+    Commands::CertificateChainResponse::Type response;
+
+    if (pqcDaEnabled && !profileRequest && (commandData.segmentID.HasValue() || commandData.maxSegmentSize.HasValue()))
+    {
+        return Status::InvalidCommand;
+    }
+
+    if (profileRequest)
+    {
+        VerifyOrReturnValue(cryptoProfile != AttestationCryptoProfileEnum::kUnknownEnumValue, Status::InvalidCommand);
+        VerifyOrReturnValue(requestedSegmentSize >= kDefaultCertificateSegmentSize &&
+                                requestedSegmentSize <= kMaxCertificateSegmentSize,
+                            Status::InvalidCommand);
+        offset = static_cast<size_t>(segmentId) * kDefaultCertificateSegmentSize;
+    }
+
+    if (certificateType == kDACCertificate)
+    {
+        ChipLogProgress(Zcl, "OpCreds: Certificate Chain request received for DAC");
+        VerifyOrReturnValue(!profileRequest ||
+                                profileSupport.DACSupportedProfiles.HasAll(ToDeviceAttestationProfileBitmap(cryptoProfile)),
+                            Status::InvalidCommand);
+        documentType = Credentials::DeviceAttestationDocumentType::kDACCertificate;
+        SuccessOrExit(err = profileRequest ? dacProvider.GetDeviceAttestationDocumentSegment(documentType, chainProfile, offset,
+                                                                                             documentSpan, documentSize)
+                                           : dacProvider.GetDeviceAttestationCert(documentSpan));
+    }
+    else if (certificateType == kPAICertificate)
+    {
+        ChipLogProgress(Zcl, "OpCreds: Certificate Chain request received for PAI");
+        VerifyOrReturnValue(!profileRequest ||
+                                profileSupport.PAISupportedProfiles.HasAll(ToDeviceAttestationProfileBitmap(cryptoProfile)),
+                            Status::InvalidCommand);
+        if (!profileRequest || segmentId == 0)
+        {
+            VerifyOrReturnValue(dacProvider.GetDeviceAttestationChainForPaiProfile(
+                                    profileRequest ? cryptoProfile : kLegacyAttestationProfile, chainProfile) == CHIP_NO_ERROR,
+                                Status::InvalidCommand);
+            VerifyOrReturnValue(exchange == nullptr || chainProfile == kLegacyAttestationProfile || selection != nullptr ||
+                                    available != nullptr,
+                                Status::ResourceExhausted);
+        }
+        else
+        {
+            VerifyOrReturnValue(selection != nullptr && selection->paiProfile == cryptoProfile, Status::InvalidCommand);
+        }
+        documentType = Credentials::DeviceAttestationDocumentType::kPAICertificate;
+        SuccessOrExit(err = profileRequest ? dacProvider.GetDeviceAttestationDocumentSegment(documentType, chainProfile, offset,
+                                                                                             documentSpan, documentSize)
+                                           : dacProvider.GetProductAttestationIntermediateCert(documentSpan));
+    }
+    else
+    {
+        ChipLogError(Zcl, "OpCreds: Certificate Chain request received for unknown type: %d", static_cast<int>(certificateType));
+        return Status::InvalidCommand;
+    }
+
+    if (!profileRequest)
+    {
+        response.certificate = documentSpan;
+    }
+    else
+    {
+        VerifyOrReturnValue(BuildSegmentedCertificateResponse(documentSpan, documentSize, offset, segmentId, response) ==
+                                CHIP_NO_ERROR,
+                            Status::InvalidCommand);
+    }
+
+    // Failed requests must not replace a previously selected chain.
+    if (certificateType == kPAICertificate && segmentId == 0 && exchange != nullptr)
+    {
+        if (!profileRequest || chainProfile == kLegacyAttestationProfile)
+        {
+            if (selection != nullptr)
+            {
+                selection->Release();
+            }
+        }
+        else
+        {
+            if (selection == nullptr)
+            {
+                selection = available;
+                VerifyOrReturnValue(selection->Grab(exchange->GetSessionHandle()), Status::Failure);
+            }
+            selection->chainProfile = chainProfile;
+            selection->paiProfile   = cryptoProfile;
+        }
+    }
+    commandObj->AddResponse(commandPath, response);
+    return std::nullopt;
+
+exit:
+    ChipLogError(Zcl, "OpCreds: Failed CertificateChainRequest: %" CHIP_ERROR_FORMAT, err.Format());
+    // The document type handed to the provider is derived from an already validated CertificateType,
+    // so on a segmented read the only provider input left under client control is the offset. An
+    // invalid argument therefore means SegmentID pointed past the end of the document.
+    VerifyOrReturnValue(!profileRequest || err != CHIP_ERROR_INVALID_ARGUMENT, Status::InvalidCommand);
+    return err;
+}
 
 CHIP_ERROR OperationalCredentialsCluster::SetCSRVendorReserved(CSRVendorReservedField field, ByteSpan data)
 {
@@ -1295,8 +1350,7 @@ std::optional<DataModel::ActionReturnStatus> OperationalCredentialsCluster::Invo
     case OperationalCredentials::Commands::AttestationRequest::Id:
         return HandleAttestationRequest(handler, request.path, input_arguments, mOpCredsContext.dacProvider);
     case OperationalCredentials::Commands::CertificateChainRequest::Id:
-        return HandleCertificateChainRequest(handler, request.path, input_arguments, mOpCredsContext.dacProvider,
-                                             mOpCredsContext.featureMap);
+        return HandleCertificateChainRequest(handler, request.path, input_arguments);
     case OperationalCredentials::Commands::CSRRequest::Id:
         return HandleCSRRequest(handler, request.path, input_arguments, mOpCredsContext.fabricTable,
                                 mOpCredsContext.failSafeContext, mOpCredsContext.dacProvider, mCsrVendorReserved);

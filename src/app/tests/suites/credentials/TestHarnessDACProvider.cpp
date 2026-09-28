@@ -375,6 +375,9 @@ void TestHarnessDACProvider::Init(const TestHarnessDACProviderData & data)
     mPqcPaiCertMlDsa44 = data.pqcPaiCertMlDsa44.HasValue() ? data.pqcPaiCertMlDsa44.Value() : ByteSpan();
     mPqcPaiCertMlDsa65 = data.pqcPaiCertMlDsa65.HasValue() ? data.pqcPaiCertMlDsa65.Value() : ByteSpan();
 
+    mPaiProfileMlDsa44 = data.paiProfileMlDsa44;
+    mPaiProfileMlDsa65 = data.paiProfileMlDsa65;
+
     mCertificationDeclaration =
         data.certificationDeclaration.HasValue() ? data.certificationDeclaration.Value() : ByteSpan{ kCdForAllExamples };
     mIsSuccessCase = data.isSuccessCase.HasValue() ? data.isSuccessCase.Value() : true;
@@ -494,6 +497,31 @@ DeviceAttestationCertProfile TestHarnessDACProvider::GetPreferredDeviceAttestati
         return DeviceAttestationCertProfile::kMlDsa44;
     }
     return DeviceAttestationCertProfile::kEcdsaMatterLegacy;
+}
+
+CHIP_ERROR TestHarnessDACProvider::GetDeviceAttestationChainForPaiProfile(DeviceAttestationCertProfile paiProfile,
+                                                                          DeviceAttestationCertProfile & chainProfile) const
+{
+    if (paiProfile == DeviceAttestationCertProfile::kEcdsaMatterLegacy)
+    {
+        VerifyOrReturnError(!mPaiCert.empty() && !mDacCert.empty(), CHIP_ERROR_NOT_IMPLEMENTED);
+        chainProfile = DeviceAttestationCertProfile::kEcdsaMatterLegacy;
+        return CHIP_NO_ERROR;
+    }
+    VerifyOrReturnError(paiProfile == DeviceAttestationCertProfile::kMlDsa44 ||
+                            paiProfile == DeviceAttestationCertProfile::kMlDsa65,
+                        CHIP_ERROR_NOT_IMPLEMENTED);
+    if (paiProfile == mPaiProfileMlDsa65 && !mPqcPaiCertMlDsa65.empty() && !mPqcDacCertMlDsa65.empty())
+    {
+        chainProfile = DeviceAttestationCertProfile::kMlDsa65;
+        return CHIP_NO_ERROR;
+    }
+    if (paiProfile == mPaiProfileMlDsa44 && !mPqcPaiCertMlDsa44.empty() && !mPqcDacCertMlDsa44.empty())
+    {
+        chainProfile = DeviceAttestationCertProfile::kMlDsa44;
+        return CHIP_NO_ERROR;
+    }
+    return CHIP_ERROR_NOT_IMPLEMENTED;
 }
 
 CHIP_ERROR TestHarnessDACProvider::GetDeviceAttestationDocumentSegment(DeviceAttestationDocumentType documentType,

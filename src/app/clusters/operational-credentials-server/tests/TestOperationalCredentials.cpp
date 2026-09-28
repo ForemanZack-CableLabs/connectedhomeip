@@ -27,10 +27,12 @@
 #include <credentials/CertificationDeclaration.h>
 #include <lib/core/CHIPError.h>
 #include <lib/core/DataModelTypes.h>
+#include <messaging/tests/MessagingContext.h>
 #include <transport/raw/MessageHeader.h>
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 namespace {
 
@@ -53,6 +55,8 @@ class TestDACProvider : public Credentials::DeviceAttestationCredentialsProvider
 {
 public:
     static constexpr size_t kLongCdSize = Credentials::kMaxCMSSignedCDMessage;
+
+    bool advertisePqcPai = false;
 
     size_t GetLastSegmentOffset() const { return mLastSegmentOffset; }
     size_t GetLastSegmentCapacity() const { return mLastSegmentCapacity; }
@@ -93,12 +97,17 @@ public:
 
     Credentials::DeviceAttestationProfileSupport GetDeviceAttestationProfileSupport() const override
     {
+        auto paiProfiles = BitMask<Credentials::DeviceAttestationCertProfileBitmap>(
+            Credentials::DeviceAttestationCertProfileBitmap::kSupportsEcdsaMatterLegacy);
+        if (advertisePqcPai)
+        {
+            paiProfiles.Set(Credentials::DeviceAttestationCertProfileBitmap::kSupportsMlDsa44);
+        }
         return {
             .PAASupportedProfiles = BitMask<Credentials::DeviceAttestationCertProfileBitmap>(
                 Credentials::DeviceAttestationCertProfileBitmap::kSupportsEcdsaMatterLegacy,
                 Credentials::DeviceAttestationCertProfileBitmap::kSupportsMlDsa44),
-            .PAISupportedProfiles = BitMask<Credentials::DeviceAttestationCertProfileBitmap>(
-                Credentials::DeviceAttestationCertProfileBitmap::kSupportsEcdsaMatterLegacy),
+            .PAISupportedProfiles = paiProfiles,
             .DACSupportedProfiles = BitMask<Credentials::DeviceAttestationCertProfileBitmap>(
                 Credentials::DeviceAttestationCertProfileBitmap::kSupportsEcdsaMatterLegacy),
         };
@@ -173,8 +182,8 @@ private:
         return data;
     }();
 
-    std::array<uint8_t, 96> mPqcDac = [] {
-        std::array<uint8_t, 96> data{};
+    std::array<uint8_t, 1250> mPqcDac = [] {
+        std::array<uint8_t, 1250> data{};
         for (size_t i = 0; i < data.size(); ++i)
         {
             data[i] = static_cast<uint8_t>(0x20 + i);
@@ -191,8 +200,8 @@ private:
         return data;
     }();
 
-    std::array<uint8_t, 128> mPqcPai = [] {
-        std::array<uint8_t, 128> data{};
+    std::array<uint8_t, 1300> mPqcPai = [] {
+        std::array<uint8_t, 1300> data{};
         for (size_t i = 0; i < data.size(); ++i)
         {
             data[i] = static_cast<uint8_t>(0x40 + i);
@@ -211,10 +220,8 @@ private:
 };
 
 // initialize memory as ReadOnlyBufferBuilder may allocate
-struct TestOperationalCredentials : public ::testing::Test
+struct TestOperationalCredentials : public chip::Testing::LoopbackMessagingContext
 {
-    static void SetUpTestSuite() { ASSERT_EQ(chip::Platform::MemoryInit(), CHIP_NO_ERROR); }
-    static void TearDownTestSuite() { chip::Platform::MemoryShutdown(); }
 
     OperationalCredentialsCluster::Context MakeContext(BitFlags<Feature> featureMap = {})
     {
@@ -471,7 +478,7 @@ TEST_F(TestOperationalCredentials, TestCertificateChainRequestPQCFeatureServesLe
     EXPECT_FALSE(paiResult.response->nextSegmentID.HasValue());
 }
 
-TEST_F(TestOperationalCredentials, TestCertificateChainRequestEcdsaProfilesSelectMixedPQCChain)
+TEST_F(TestOperationalCredentials, TestCertificateChainRequestExplicitLegacyProfileSelectsLegacyChain)
 {
     OperationalCredentialsCluster cluster(kRootEndpointId, MakeContext(BitFlags<Feature>(Feature::kPQCDeviceAttestation)));
     ClusterTester tester(cluster);
@@ -487,10 +494,10 @@ TEST_F(TestOperationalCredentials, TestCertificateChainRequestEcdsaProfilesSelec
     {
         return;
     }
-    EXPECT_EQ(dacResult.response->certificate.size(), 96u);
-    EXPECT_EQ(dacResult.response->certificate.data()[0], 0x20u);
+    EXPECT_EQ(dacResult.response->certificate.size(), 32u);
+    EXPECT_EQ(dacResult.response->certificate.data()[0], 0u);
     ASSERT_TRUE(dacResult.response->totalDocumentSize.HasValue());
-    EXPECT_EQ(dacResult.response->totalDocumentSize.Value(), 96u);
+    EXPECT_EQ(dacResult.response->totalDocumentSize.Value(), 32u);
     EXPECT_FALSE(dacResult.response->nextSegmentID.HasValue());
 
     Commands::CertificateChainRequest::Type paiRequest;
@@ -504,11 +511,118 @@ TEST_F(TestOperationalCredentials, TestCertificateChainRequestEcdsaProfilesSelec
     {
         return;
     }
-    EXPECT_EQ(paiResult.response->certificate.size(), 128u);
-    EXPECT_EQ(paiResult.response->certificate.data()[0], 0x40u);
+    EXPECT_EQ(paiResult.response->certificate.size(), 48u);
+    EXPECT_EQ(paiResult.response->certificate.data()[0], 0x80u);
     ASSERT_TRUE(paiResult.response->totalDocumentSize.HasValue());
-    EXPECT_EQ(paiResult.response->totalDocumentSize.Value(), 128u);
+    EXPECT_EQ(paiResult.response->totalDocumentSize.Value(), 48u);
     EXPECT_FALSE(paiResult.response->nextSegmentID.HasValue());
+}
+
+TEST_F(TestOperationalCredentials, TestCertificateChainRequestPaiSelectsChainForSession)
+{
+    mDacProvider.advertisePqcPai = true;
+    OperationalCredentialsCluster cluster(kRootEndpointId, MakeContext(BitFlags<Feature>(Feature::kPQCDeviceAttestation)));
+    ClusterTester tester(cluster);
+    const auto closeExchange = [](Messaging::ExchangeContext * exchange) { exchange->Close(); };
+    std::unique_ptr<Messaging::ExchangeContext, decltype(closeExchange)> first(NewExchangeToAlice(nullptr), closeExchange);
+    std::unique_ptr<Messaging::ExchangeContext, decltype(closeExchange)> second(NewExchangeToBob(nullptr), closeExchange);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    tester.GetCommandHandler().SetExchangeContext(first.get());
+
+    Commands::CertificateChainRequest::Type paiRequest;
+    paiRequest.certificateType = CertificateChainTypeEnum::kPAICertificate;
+    paiRequest.cryptoProfile.SetValue(AttestationCryptoProfileEnum::kMlDsa44);
+    auto paiResult = tester.Invoke(paiRequest);
+    ASSERT_TRUE(paiResult.IsSuccess());
+    ASSERT_TRUE(paiResult.response.has_value());
+    ASSERT_TRUE(paiResult.response->totalDocumentSize.HasValue());
+    EXPECT_EQ(paiResult.response->totalDocumentSize.Value(), 1300u);
+    EXPECT_EQ(paiResult.response->certificate.data()[0], 0x40u);
+
+    // A failed attempt to select legacy must leave the successful PQC selection intact.
+    auto invalidRequest = paiRequest;
+    invalidRequest.cryptoProfile.SetValue(AttestationCryptoProfileEnum::kEcdsaMatterLegacy);
+    invalidRequest.maxSegmentSize.SetValue(kDefaultCertificateSegmentSize - 1);
+    EXPECT_FALSE(tester.Invoke(invalidRequest).IsSuccess());
+
+    // A different profile cannot replace the chain partway through a segmented PAI read.
+    invalidRequest.maxSegmentSize.ClearValue();
+    invalidRequest.segmentID.SetValue(1);
+    EXPECT_FALSE(tester.Invoke(invalidRequest).IsSuccess());
+
+    // Requests from another session default to legacy and cannot overwrite the first session.
+    tester.GetCommandHandler().SetExchangeContext(second.get());
+    Commands::CertificateChainRequest::Type dacRequest;
+    dacRequest.certificateType = CertificateChainTypeEnum::kDACCertificate;
+    dacRequest.cryptoProfile.SetValue(AttestationCryptoProfileEnum::kEcdsaMatterLegacy);
+    auto secondDac = tester.Invoke(dacRequest);
+    ASSERT_TRUE(secondDac.response.has_value());
+    EXPECT_EQ(secondDac.response->certificate.size(), 32u);
+    auto legacyPai = paiRequest;
+    legacyPai.cryptoProfile.SetValue(AttestationCryptoProfileEnum::kEcdsaMatterLegacy);
+    auto secondPai = tester.Invoke(legacyPai);
+    ASSERT_TRUE(secondPai.response.has_value());
+    EXPECT_EQ(secondPai.response->certificate.size(), 48u);
+
+    // A new exchange on the original session retains the PAI selection.
+    first.reset(NewExchangeToAlice(nullptr));
+    ASSERT_NE(first, nullptr);
+    tester.GetCommandHandler().SetExchangeContext(first.get());
+    for (uint16_t segment = 1; segment < 3; ++segment)
+    {
+        paiRequest.segmentID.SetValue(segment);
+        auto result = tester.Invoke(paiRequest);
+        ASSERT_TRUE(result.response.has_value());
+        EXPECT_EQ(result.response->certificate.size(), segment == 1 ? 600u : 100u);
+        EXPECT_EQ(result.response->nextSegmentID.HasValue(), segment == 1);
+        EXPECT_EQ(mDacProvider.GetLastSegmentOffset(), static_cast<size_t>(segment) * 600);
+    }
+    // The DAC key is ECDSA even though its certificate belongs to the selected PQC chain.
+    for (uint16_t segment = 0; segment < 3; ++segment)
+    {
+        dacRequest.segmentID.SetValue(segment);
+        auto result = tester.Invoke(dacRequest);
+        ASSERT_TRUE(result.response.has_value());
+        EXPECT_EQ(result.response->certificate.size(), segment < 2 ? 600u : 50u);
+        ASSERT_TRUE(result.response->totalDocumentSize.HasValue());
+        EXPECT_EQ(result.response->totalDocumentSize.Value(), 1250u);
+        EXPECT_EQ(result.response->nextSegmentID.HasValue(), segment < 2);
+    }
+
+    // Both explicit and parameterless legacy PAI requests replace a prior PQC selection.
+    for (bool explicitProfile : { true, false })
+    {
+        paiRequest.segmentID.ClearValue();
+        ASSERT_TRUE(tester.Invoke(paiRequest).IsSuccess());
+        if (!explicitProfile)
+        {
+            legacyPai.cryptoProfile.ClearValue();
+        }
+        auto result = tester.Invoke(legacyPai);
+        ASSERT_TRUE(result.response.has_value());
+        EXPECT_EQ(result.response->certificate.size(), 48u);
+        EXPECT_EQ(result.response->certificate.data()[0], 0x80u);
+        dacRequest.segmentID.ClearValue();
+        auto dac = tester.Invoke(dacRequest);
+        ASSERT_TRUE(dac.response.has_value());
+        EXPECT_EQ(dac.response->certificate.size(), 32u);
+        EXPECT_EQ(dac.response->certificate.data()[0], 0u);
+    }
+
+    // Expiring the session clears the selection; a replacement session starts with legacy.
+    ASSERT_TRUE(tester.Invoke(paiRequest).IsSuccess());
+    tester.GetCommandHandler().SetExchangeContext(nullptr);
+    first.reset();
+    ExpireSessionBobToAlice();
+    ASSERT_EQ(CreateSessionBobToAlice(), CHIP_NO_ERROR);
+    first.reset(NewExchangeToAlice(nullptr));
+    ASSERT_NE(first, nullptr);
+    tester.GetCommandHandler().SetExchangeContext(first.get());
+    auto replacementDac = tester.Invoke(dacRequest);
+    ASSERT_TRUE(replacementDac.response.has_value());
+    EXPECT_EQ(replacementDac.response->certificate.size(), 32u);
+    tester.GetCommandHandler().SetExchangeContext(nullptr);
 }
 
 TEST_F(TestOperationalCredentials, TestCertificateChainRequestPQCModeRejectsUnsupportedRequests)
@@ -649,9 +763,9 @@ TEST_F(TestOperationalCredentials, TestCertificateChainRequestPQCModeAcceptsSegm
         {
             return;
         }
-        EXPECT_EQ(result.response->certificate.size(), 96u);
+        EXPECT_EQ(result.response->certificate.size(), 32u);
         ASSERT_TRUE(result.response->totalDocumentSize.HasValue());
-        EXPECT_EQ(result.response->totalDocumentSize.Value(), 96u);
+        EXPECT_EQ(result.response->totalDocumentSize.Value(), 32u);
         EXPECT_FALSE(result.response->nextSegmentID.HasValue());
     }
 }

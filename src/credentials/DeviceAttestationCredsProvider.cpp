@@ -99,6 +99,31 @@ DeviceAttestationCredentialsProvider::GetProductAttestationIntermediateCertForPr
     return GetProductAttestationIntermediateCert(out_pai_buffer);
 }
 
+CHIP_ERROR
+DeviceAttestationCredentialsProvider::GetDeviceAttestationChainForPaiProfile(DeviceAttestationCertProfile paiProfile,
+                                                                             DeviceAttestationCertProfile & chainProfile) const
+{
+    const auto supported = GetDeviceAttestationProfileSupport().PAISupportedProfiles;
+    DeviceAttestationCertProfileBitmap requested;
+    switch (paiProfile)
+    {
+    case DeviceAttestationCertProfile::kEcdsaMatterLegacy:
+        requested = DeviceAttestationCertProfileBitmap::kSupportsEcdsaMatterLegacy;
+        break;
+    case DeviceAttestationCertProfile::kMlDsa44:
+        requested = DeviceAttestationCertProfileBitmap::kSupportsMlDsa44;
+        break;
+    case DeviceAttestationCertProfile::kMlDsa65:
+        requested = DeviceAttestationCertProfileBitmap::kSupportsMlDsa65;
+        break;
+    default:
+        return CHIP_ERROR_NOT_IMPLEMENTED;
+    }
+    VerifyOrReturnError(supported.Has(requested), CHIP_ERROR_NOT_IMPLEMENTED);
+    chainProfile = paiProfile;
+    return CHIP_NO_ERROR;
+}
+
 bool DeviceAttestationCredentialsProvider::HasRequiredPqcCredentials() const
 {
     const auto profileSupport = GetDeviceAttestationProfileSupport();

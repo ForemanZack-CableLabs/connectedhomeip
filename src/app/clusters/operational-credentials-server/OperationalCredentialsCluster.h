@@ -27,6 +27,7 @@
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <credentials/GroupDataProvider.h>
 #include <lib/support/BitFlags.h>
+#include <transport/SessionHolder.h>
 
 namespace chip {
 namespace app {
@@ -102,6 +103,19 @@ public:
     void OnFabricCommitted(const FabricTable & fabricTable, FabricIndex fabricIndex) override;
 
 private:
+    std::optional<DataModel::ActionReturnStatus> HandleCertificateChainRequest(CommandHandler * commandObj,
+                                                                               const ConcreteCommandPath & commandPath,
+                                                                               TLV::TLVReader & inputArguments);
+
+    struct AttestationChainSelection : SessionHolder
+    {
+        // A replacement session must select its own chain, even for the same peer.
+        void ShiftToSession(const SessionHandle &) override { Release(); }
+        Credentials::DeviceAttestationCertProfile chainProfile = Credentials::DeviceAttestationCertProfile::kEcdsaMatterLegacy;
+        Credentials::DeviceAttestationCertProfile paiProfile   = Credentials::DeviceAttestationCertProfile::kEcdsaMatterLegacy;
+    };
+    // No heap allocation; released sessions automatically free their selection slot.
+    AttestationChainSelection mAttestationChains[CHIP_CONFIG_SECURE_SESSION_POOL_SIZE];
     const OperationalCredentialsCluster::Context mOpCredsContext;
 
     bool HasFeature(OperationalCredentials::Feature feature) const { return mOpCredsContext.featureMap.Has(feature); }

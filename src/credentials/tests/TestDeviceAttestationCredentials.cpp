@@ -344,6 +344,47 @@ TEST_F(TestDeviceAttestationCredentials, TestMixedChainSelection)
     EXPECT_FALSE(provider.HasRequiredPqcCredentials());
 }
 
+TEST_F(TestDeviceAttestationCredentials, TestPaiProfileSelectsMatchingCompleteChain)
+{
+    using Examples::TestHarnessDACProvider;
+    using Examples::TestHarnessDACProviderData;
+    using Profile                = DeviceAttestationCertProfile;
+    constexpr uint8_t document[] = { 1, 2, 3 };
+    TestHarnessDACProviderData data;
+    data.pqcPaiCertMlDsa44.SetValue(ByteSpan(document));
+    data.pqcDacCertMlDsa44.SetValue(ByteSpan(document));
+    data.pqcPaiCertMlDsa65.SetValue(ByteSpan(document));
+    data.pqcDacCertMlDsa65.SetValue(ByteSpan(document));
+    TestHarnessDACProvider provider;
+    provider.Init(data);
+    Profile selected = Profile::kMlDsa65;
+    for (auto requested : { Profile::kEcdsaMatterLegacy, Profile::kMlDsa44, Profile::kMlDsa65 })
+    {
+        ASSERT_EQ(provider.GetDeviceAttestationChainForPaiProfile(requested, selected), CHIP_NO_ERROR);
+        EXPECT_EQ(selected, requested);
+    }
+
+    // ML-DSA-44 PAIs can be issued by ML-DSA-65 PAAs. Prefer the stronger matching complete chain.
+    data.paiProfileMlDsa65 = Profile::kMlDsa44;
+    provider.Init(data);
+    ASSERT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kMlDsa44, selected), CHIP_NO_ERROR);
+    EXPECT_EQ(selected, Profile::kMlDsa65);
+    EXPECT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kMlDsa65, selected), CHIP_ERROR_NOT_IMPLEMENTED);
+    EXPECT_EQ(selected, Profile::kMlDsa65);
+
+    data.pqcDacCertMlDsa65.ClearValue();
+    provider.Init(data);
+    ASSERT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kMlDsa44, selected), CHIP_NO_ERROR);
+    EXPECT_EQ(selected, Profile::kMlDsa44);
+
+    data.paiProfileMlDsa44 = Profile::kEcdsaMatterLegacy;
+    provider.Init(data);
+    ASSERT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kEcdsaMatterLegacy, selected), CHIP_NO_ERROR);
+    EXPECT_EQ(selected, Profile::kEcdsaMatterLegacy);
+    EXPECT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kMlDsa44, selected), CHIP_ERROR_NOT_IMPLEMENTED);
+    EXPECT_EQ(provider.GetDeviceAttestationChainForPaiProfile(Profile::kUnknownEnumValue, selected), CHIP_ERROR_NOT_IMPLEMENTED);
+}
+
 TEST_F(TestDeviceAttestationCredentials, TestJsonIssuerProfilesAreIndependent)
 {
     using namespace chip::Credentials::Examples;

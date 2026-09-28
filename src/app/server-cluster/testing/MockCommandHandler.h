@@ -93,7 +93,7 @@ public:
     bool IsTimedInvoke() const override { return false; }
     void FlushAcksRightAwayOnSlowCommand() override {}
     Access::SubjectDescriptor GetSubjectDescriptor() const override { return mSubjectDescriptor; }
-    Messaging::ExchangeContext * GetExchangeContext() const override { return nullptr; }
+    Messaging::ExchangeContext * GetExchangeContext() const override { return mExchangeContext; }
 
     // Helper methods to extract response data
     bool HasResponse() const { return !mResponses.empty(); }
@@ -139,10 +139,12 @@ public:
     }
 
     // Configuration methods
+    void SetExchangeContext(Messaging::ExchangeContext * exchange) { mExchangeContext = exchange; }
     void SetFabricIndex(FabricIndex fabricIndex) { mSubjectDescriptor.fabricIndex = fabricIndex; }
     void SetSubjectDescriptor(const Access::SubjectDescriptor & subjectDescriptor) { mSubjectDescriptor = subjectDescriptor; }
 
 private:
+    Messaging::ExchangeContext * mExchangeContext = nullptr;
     std::vector<ResponseRecord> mResponses;
     std::vector<StatusRecord> mStatuses;
     Access::SubjectDescriptor mSubjectDescriptor = kAdminSubjectDescriptor; // Default to a clearly test-only subject descriptor.

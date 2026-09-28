@@ -28,5 +28,6 @@ chip_test_suite("tests") {
     "${chip_root}/src/app/clusters/operational-credentials-server",
     "${chip_root}/src/app/server-cluster/testing",
     "${chip_root}/src/lib/support",
+    "${chip_root}/src/messaging/tests:helpers",
   ]
 }

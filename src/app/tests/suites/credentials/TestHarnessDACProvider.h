@@ -65,6 +65,8 @@ public:
     CHIP_ERROR SignWithDeviceAttestationKey(const ByteSpan & message_to_sign, MutableByteSpan & out_signature_buffer) override;
     DeviceAttestationProfileSupport GetDeviceAttestationProfileSupport() const override;
     DeviceAttestationCertProfile GetPreferredDeviceAttestationChainProfile() const override;
+    CHIP_ERROR GetDeviceAttestationChainForPaiProfile(DeviceAttestationCertProfile paiProfile,
+                                                      DeviceAttestationCertProfile & chainProfile) const override;
     CHIP_ERROR GetDeviceAttestationDocumentSegment(DeviceAttestationDocumentType documentType, DeviceAttestationCertProfile profile,
                                                    size_t offset, MutableByteSpan & out_document_buffer,
                                                    size_t & out_document_size) override;
@@ -88,6 +90,8 @@ private:
     ByteSpan mPaiCert;
     ByteSpan mPqcPaiCertMlDsa44;
     ByteSpan mPqcPaiCertMlDsa65;
+    DeviceAttestationCertProfile mPaiProfileMlDsa44 = DeviceAttestationCertProfile::kMlDsa44;
+    DeviceAttestationCertProfile mPaiProfileMlDsa65 = DeviceAttestationCertProfile::kMlDsa65;
     ByteSpan mCertificationDeclaration;
     ByteSpan mFirmwareInformation;
     CharSpan mDescription;

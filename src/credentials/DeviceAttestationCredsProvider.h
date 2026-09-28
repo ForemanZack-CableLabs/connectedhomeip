@@ -136,6 +136,15 @@ public:
         return DeviceAttestationCertProfile::kEcdsaMatterLegacy;
     }
 
+    /**
+     * Select a complete stored chain whose PAI uses the requested profile.
+     * An explicit legacy request selects the legacy chain. The default preserves
+     * existing providers whose PAA and PAI profiles match; providers with mixed
+     * issuer profiles must override this mapping.
+     */
+    virtual CHIP_ERROR GetDeviceAttestationChainForPaiProfile(DeviceAttestationCertProfile paiProfile,
+                                                              DeviceAttestationCertProfile & chainProfile) const;
+
     /// Whether the provider reports a legacy chain and PQC PAA or PAI profiles, as required to enable PQC attestation.
     bool HasRequiredPqcCredentials() const;
 
